@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>タイドグラフ – 気象庁潮位予測連携</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0b1d33; --bg2:#10355c;
+    --card:#ffffff; --ink:#0f2a4a; --muted:#6b7c93;
+    --accent:#0a84ff; --hi:#ff6b6b; --lo:#1abc9c; --line:#e3e9f1;
+    --warn:#ffb020;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",Roboto,sans-serif;color:var(--ink);background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%);min-height:100vh}
+  header{padding:24px 20px 16px;text-align:center;color:#fff}
+  header h1{margin:0 0 4px;font-size:24px;letter-spacing:.04em}
+  header p{margin:0;color:#cfe1ff;font-size:13px}
+  main{max-width:1100px;margin:0 auto;padding:16px}
+  .card{background:var(--card);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:16px 18px;margin-bottom:16px}
+  .controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .controls label{font-size:13px;color:var(--muted);margin-right:4px}
+  select,input[type=date],button{font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
+  button{background:var(--accent);color:#fff;border-color:transparent;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  button:hover{filter:brightness(.95)}
+  button[disabled]{opacity:.5;cursor:not-allowed}
+  .status{font-size:12px;color:var(--muted);margin-top:8px;min-height:18px}
+  .status.error{color:#d93025}
+  .status.ok{color:#0a8a3f}
+  .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px}
+  .info-card{background:#f5f8fc;border-radius:10px;padding:10px 12px;text-align:center}
+  .info-card .label{font-size:11px;color:var(--muted);letter-spacing:.05em}
+  .info-card .value{font-size:18px;font-weight:600;margin-top:2px}
+  .chart-wrap{position:relative;height:340px}
+  .chart-wrap.weekly{height:260px}
+  h2{margin:4px 0 12px;font-size:16px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:center}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.04em}
+  td.hi{color:var(--hi);font-weight:600}
+  td.lo{color:var(--lo);font-weight:600}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill.hi{background:#ffe6e6;color:var(--hi)}
+  .pill.lo{background:#e0fff7;color:var(--lo)}
+  .pill.src{background:#eaf3ff;color:var(--accent)}
+  .moon-emoji{font-size:22px;line-height:1}
+  .disclaimer{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6}
+  .disclaimer a{color:var(--accent)}
+  .row{display:flex;flex-wrap:wrap;gap:16px}
+  .row > .card{flex:1;min-width:280px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .seg button{border:none;border-radius:0;background:#fff;color:var(--ink);padding:8px 14px}
+  .seg button.on{background:var(--accent);color:#fff}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #cfe1ff;border-top-color:var(--accent);border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:middle;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media (max-width:560px){
+    header h1{font-size:20px}
+    .chart-wrap{height:280px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌊 タイドグラフ <small style="font-size:13px;font-weight:400;color:#cfe1ff">気象庁潮位予測連携</small></h1>
+  <p>気象庁公開の天文潮位予測値（潮位表基準面上）をブラウザで取得・表示</p>
+</header>
+<main>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="controls">
+      <label for="portSelect">地点</label>
+      <select id="portSelect"></select>
+      <label for="dateInput">日付</label>
+      <input type="date" id="dateInput">
+      <button id="todayBtn" class="ghost">今日</button>
+      <button id="prevBtn" class="ghost">‹ 前日</button>
+      <button id="nextBtn" class="ghost">翌日 ›</button>
+      <span style="margin-left:auto"></span>
+      <div class="seg" title="データソース">
+        <button id="srcJma" class="on">気象庁</button>
+        <button id="srcCalc">簡易計算</button>
+      </div>
+      <button id="reloadBtn" class="ghost" title="キャッシュを破棄して再取得">⟳ 再取得</button>
+    </div>
+    <div class="status" id="statusLine"></div>
+    <div class="info-grid" id="infoGrid"></div>
+  </div>
+
+  <!-- Today's tide chart + table -->
+  <div class="row">
+    <div class="card" style="flex:2;min-width:320px">
+      <h2 id="dayTitle">本日の潮位</h2>
+      <div class="chart-wrap"><canvas id="tideChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>満潮・干潮</h2>
+      <table id="extremaTable">
+        <thead><tr><th>区分</th><th>時刻</th><th>潮位 (cm)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Weekly forecast -->
+  <div class="card">
+    <h2>1週間の予測</h2>
+    <div class="chart-wrap weekly"><canvas id="weeklyChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <p class="disclaimer">
+      <b>データ：</b> 気象庁「<a href="https://www.data.jma.go.jp/kaiyou/db/tide/suisan/index.php" target="_blank" rel="noopener">潮汐・海面水位のデータ 潮位表</a>」のテキストデータ版（<code>https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/&lt;年&gt;/&lt;地点&gt;.txt</code>）をCORSプロキシ経由で取得しています。
+      ブラウザから直接 jma.go.jp へ取得しようとするとCORSで弾かれるため、フリーの公共プロキシ（corsproxy.io / allorigins.win）を経由します。プロキシが落ちている場合は「再取得」または「簡易計算」へ切替えてください。<br>
+      <b>注意：</b> 表示されるのは天文潮位予測（潮位表基準面上、cm）です。実測値ではありません。気象擾乱や副振動による偏差は含まれません。掲載年は <b>2025年・2026年・2027年</b> の3年分のみです（範囲外を選ぶと簡易計算に自動フォールバック）。
+    </p>
+  </div>
+
+</main>
+
+<script>
+/* =========================================================================
+   Ports — JMA station codes
+   ========================================================================= */
+const PORTS = {
+  hakodate: {name:"函館",       stn:"HK", lat:41.78, lon:140.73},
+  kushiro:  {name:"釧路",       stn:"KR", lat:42.97, lon:144.37},
+  shiogama: {name:"塩釜",       stn:"SG", lat:38.32, lon:141.02},
+  tokyo:    {name:"東京",       stn:"TK", lat:35.66, lon:139.77},
+  yokohama: {name:"横浜",       stn:"QS", lat:35.45, lon:139.65},
+  nagoya:   {name:"名古屋",     stn:"NG", lat:35.07, lon:136.88},
+  osaka:    {name:"大阪",       stn:"OS", lat:34.65, lon:135.43},
+  kobe:     {name:"神戸",       stn:"KB", lat:34.68, lon:135.20},
+  hiroshima:{name:"広島",       stn:"Q8", lat:34.35, lon:132.47},
+  hakata:   {name:"博多",       stn:"QF", lat:33.60, lon:130.40},
+  kagoshima:{name:"鹿児島",     stn:"KG", lat:31.58, lon:130.57},
+  naha:     {name:"那覇",       stn:"NH", lat:26.22, lon:127.67},
+  niigata:  {name:"新潟西港",   stn:"S6", lat:37.95, lon:139.06}
+};
+
+// Approximate harmonic constants for the simple-mode fallback (same as offline version)
+const HARMONIC = {
+  TK:{Z0:100,H:{M2:[45,148],S2:[22,183],N2:[9,128],K1:[22,176],O1:[16,158],P1:[7,176],K2:[6,183],Q1:[3,158]}},
+  QS:{Z0:100,H:{M2:[46,150],S2:[22,185],N2:[9,131],K1:[22,176],O1:[16,158],P1:[7,176],K2:[6,185],Q1:[3,158]}},
+  NG:{Z0:115,H:{M2:[85,170],S2:[40,200],N2:[15,150],K1:[25,180],O1:[18,160],P1:[8,180],K2:[12,200],Q1:[4,160]}},
+  OS:{Z0:90, H:{M2:[50,200],S2:[25,235],N2:[10,180],K1:[25,180],O1:[18,160],P1:[8,180],K2:[7,235],Q1:[4,160]}},
+  KB:{Z0:90, H:{M2:[48,198],S2:[24,232],N2:[10,178],K1:[25,178],O1:[18,158],P1:[8,178],K2:[7,232],Q1:[4,158]}},
+  Q8:{Z0:175,H:{M2:[120,80],S2:[60,115],N2:[22,60],K1:[30,150],O1:[22,130],P1:[10,150],K2:[16,115],Q1:[5,130]}},
+  QF:{Z0:100,H:{M2:[70,250],S2:[33,290],N2:[13,225],K1:[20,170],O1:[15,150],P1:[7,170],K2:[10,290],Q1:[3,150]}},
+  KG:{Z0:110,H:{M2:[85,265],S2:[40,295],N2:[15,240],K1:[20,165],O1:[15,145],P1:[7,165],K2:[12,295],Q1:[3,145]}},
+  NH:{Z0:90, H:{M2:[67,165],S2:[28,195],N2:[13,140],K1:[20,210],O1:[18,190],P1:[7,210],K2:[8,195],Q1:[4,190]}},
+  S6:{Z0:20, H:{M2:[8,255],S2:[4,285],N2:[2,235],K1:[8,40],O1:[7,20],P1:[3,40],K2:[1,285],Q1:[2,20]}},
+  SG:{Z0:80, H:{M2:[58,165],S2:[28,200],N2:[13,145],K1:[15,170],O1:[12,150],P1:[5,170],K2:[8,200],Q1:[3,150]}},
+  HK:{Z0:45, H:{M2:[15,135],S2:[9,170],N2:[3,115],K1:[11,120],O1:[8,100],P1:[4,120],K2:[3,170],Q1:[2,100]}},
+  KR:{Z0:75, H:{M2:[35,255],S2:[16,290],N2:[7,230],K1:[24,170],O1:[18,150],P1:[8,170],K2:[5,290],Q1:[4,150]}}
+};
+
+const C = {speed:{ M2:28.9841042, S2:30.0000000, N2:28.4397295, K1:15.0410686,
+                   O1:13.9430356, P1:14.9589314, K2:30.0821373, Q1:13.3986609 }};
+const D2R = Math.PI/180, R2D = 180/Math.PI;
+const norm360 = x => ((x%360)+360)%360;
+const pad2 = n => String(n).padStart(2,"0");
+
+const JMA_YEARS_AVAILABLE = [2025, 2026, 2027];
+
+/* =========================================================================
+   JMA fetch + parse
+   -------------------------------------------------------------------------
+   公開運用時の推奨：自前のCloudflare Workerをデプロイし、下のMY_PROXYに
+   そのURL（末尾なし）を入れる。例：
+     const MY_PROXY = "https://jma-tide.example.workers.dev";
+   空文字のままなら公共CORSプロキシのみを使用する。
+   ========================================================================= */
+const MY_PROXY = ""; // ← 自前Workerを立てたらここに URL を設定
+
+const PROXIES = [
+  ...(MY_PROXY ? [url => `${MY_PROXY}/?url=${encodeURIComponent(url)}`] : []),
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+];
+const CACHE_PREFIX = "jmaTide:v1:";
+
+function jmaUrl(year, stn){
+  return `https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/${year}/${stn}.txt`;
+}
+
+async function fetchYearText(year, stn){
+  const direct = jmaUrl(year, stn);
+  let lastErr;
+  for(const wrap of PROXIES){
+    try{
+      const r = await fetch(wrap(direct), {cache:"force-cache"});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const txt = await r.text();
+      if(txt.length < 1000) throw new Error("response too short");
+      return txt;
+    }catch(e){ lastErr = e; }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
+// Parse one day line (>= 136 chars): 24 hourly + 6 yymmdd + 2 stn + 4 hi + 4 lo
+function parseLine(line){
+  if(line.length < 80) return null;
+  const hourly = [];
+  for(let i=0;i<24;i++){
+    const v = parseInt(line.substr(i*3, 3), 10);
+    hourly.push(Number.isNaN(v) || v===999 ? null : v);
+  }
+  const yy = parseInt(line.substr(72,2),10);
+  const mm = parseInt(line.substr(74,2),10);
+  const dd = parseInt(line.substr(76,2),10);
+  const stn = line.substr(78,2);
+  const yyyy = 2000 + yy;
+
+  function readEntries(off){
+    const out=[];
+    for(let i=0;i<4;i++){
+      const seg = line.substr(off + i*7, 7);
+      if(seg.length<7) break;
+      // Time field uses spaces as leading-zero padding ("  48" or " 4 8" → 04:08).
+      const tStr = seg.substr(0,4).replace(/ /g, "0");
+      const hStr = seg.substr(4,3);
+      const t = parseInt(tStr,10);
+      const h = parseInt(hStr,10);
+      if(Number.isNaN(t) || Number.isNaN(h) || tStr==="9999" || h===999) continue;
+      out.push({hh: Math.floor(t/100), mm: t%100, h});
+    }
+    return out;
+  }
+  const highs = readEntries(80);
+  const lows  = readEntries(108);
+  return {date:`${yyyy}-${pad2(mm)}-${pad2(dd)}`, yyyy, mm, dd, stn, hourly, highs, lows};
+}
+
+function parseYearText(txt){
+  const map = {};
+  txt.split(/\r?\n/).forEach(line=>{
+    if(!line.trim()) return;
+    const d = parseLine(line);
+    if(d) map[d.date] = d;
+  });
+  return map;
+}
+
+const yearCache = {}; // {stn_year: {parsed at, data}}
+async function getJmaYear(year, stn){
+  const key = stn + "_" + year;
+  if(yearCache[key]) return yearCache[key];
+  // localStorage cache
+  try{
+    const raw = localStorage.getItem(CACHE_PREFIX+key);
+    if(raw){
+      const o = JSON.parse(raw);
+      if(Date.now() - o.t < 7*86400000){
+        yearCache[key] = o.data;
+        return o.data;
+      }
+    }
+  }catch(e){}
+  // network
+  const txt = await fetchYearText(year, stn);
+  const data = parseYearText(txt);
+  yearCache[key] = data;
+  try{ localStorage.setItem(CACHE_PREFIX+key, JSON.stringify({t:Date.now(),data})); }catch(e){}
+  return data;
+}
+
+function clearJmaCache(){
+  Object.keys(yearCache).forEach(k=>delete yearCache[k]);
+  for(let i=localStorage.length-1;i>=0;i--){
+    const k = localStorage.key(i);
+    if(k && k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k);
+  }
+}
+
+/* =========================================================================
+   Harmonic fallback
+   ========================================================================= */
+function julianDate(d){ return d.getTime()/86400000 + 2440587.5; }
+function meanElements(d){
+  const days = julianDate(d) - 2451545.0;
+  return {days,
+    s: norm360(218.3164591 + 13.17639648 * days),
+    h: norm360(280.4664567 + 0.98564736  * days),
+    p: norm360(83.3532430  + 0.11140353  * days),
+    N: norm360(125.0445479 - 0.05295377  * days),
+    p1:norm360(282.94      + 0.00004708  * days)};
+}
+function lunarTime(d){
+  const {s,h} = meanElements(d);
+  const utcH = d.getUTCHours()+d.getUTCMinutes()/60+d.getUTCSeconds()/3600;
+  return norm360(15*utcH + h - s + 180);
+}
+function V0(d){
+  const T=lunarTime(d), e=meanElements(d), {s,h,p}=e;
+  return {M2:norm360(2*T-2*s+2*h), S2:norm360(2*T), N2:norm360(2*T-3*s+2*h+p),
+          K1:norm360(T+h-90), O1:norm360(T-2*s+h+90),
+          P1:norm360(T-h-90), K2:norm360(2*T+2*h), Q1:norm360(T-3*s+h+p+90)};
+}
+function tideHeightHarmonic(date, stn){
+  const port = HARMONIC[stn]; if(!port) return null;
+  const v = V0(date); let total = port.Z0;
+  for(const k of Object.keys(port.H)){
+    const [H,kappa] = port.H[k];
+    total += H * Math.cos((v[k] - kappa) * D2R);
+  }
+  return total;
+}
+
+/* =========================================================================
+   Sun & Moon
+   ========================================================================= */
+function sunTimes(date, lat, lon){
+  const baseUTC = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate());
+  const jd = baseUTC/86400000 + 2440587.5 + 0.5;
+  const n = jd - 2451545.0 + 0.0008;
+  const Jstar = n - lon/360;
+  const M = norm360(357.5291 + 0.98560028*Jstar) * D2R;
+  const Ceq = 1.9148*Math.sin(M) + 0.0200*Math.sin(2*M) + 0.0003*Math.sin(3*M);
+  const lambda = norm360(M*R2D + 102.9372 + Ceq + 180) * D2R;
+  const Jtransit = 2451545.0 + Jstar + 0.0053*Math.sin(M) - 0.0069*Math.sin(2*lambda);
+  const decl = Math.asin(Math.sin(lambda)*Math.sin(23.44*D2R));
+  const cosOmega = (Math.sin(-0.83*D2R) - Math.sin(lat*D2R)*Math.sin(decl)) / (Math.cos(lat*D2R)*Math.cos(decl));
+  if(cosOmega>1) return {rise:null,set:null,polar:"night"};
+  if(cosOmega<-1) return {rise:null,set:null,polar:"day"};
+  const omega = Math.acos(cosOmega) * R2D;
+  return {
+    rise: new Date(((Jtransit - omega/360) - 2440587.5)*86400000),
+    set:  new Date(((Jtransit + omega/360) - 2440587.5)*86400000)
+  };
+}
+function moonPhase(date){
+  const ref = Date.UTC(2000,0,6,18,14)/86400000;
+  const now = date.getTime()/86400000;
+  const syn = 29.530588853;
+  const phase = ((now - ref) % syn + syn) % syn;
+  const illum = 0.5*(1 - Math.cos(2*Math.PI*phase/syn));
+  let name, emoji;
+  const f = phase/syn;
+  if(f<0.03||f>0.97){name="新月";emoji="🌑";}
+  else if(f<0.22){name="三日月";emoji="🌒";}
+  else if(f<0.28){name="上弦";emoji="🌓";}
+  else if(f<0.47){name="十三夜月";emoji="🌔";}
+  else if(f<0.53){name="満月";emoji="🌕";}
+  else if(f<0.72){name="十六夜";emoji="🌖";}
+  else if(f<0.78){name="下弦";emoji="🌗";}
+  else {name="有明月";emoji="🌘";}
+  return {age:phase, illum, name, emoji};
+}
+function moonEquatorial(date){
+  const e=meanElements(date);
+  const sR=e.s*D2R, pR=e.p*D2R, NR=e.N*D2R, hR=e.h*D2R, p1R=e.p1*D2R;
+  const D=sR-hR, Mm=sR-pR, Ms=hR-p1R, F=sR-NR;
+  const lon = e.s + 6.289*Math.sin(Mm) - 1.274*Math.sin(Mm-2*D)
+            + 0.658*Math.sin(2*D) - 0.186*Math.sin(Ms) - 0.059*Math.sin(2*Mm-2*D);
+  const lat = 5.128*Math.sin(F) + 0.281*Math.sin(Mm+F) - 0.278*Math.sin(F-Mm);
+  const eps=23.4397*D2R, L=lon*D2R, B=lat*D2R;
+  return {
+    ra:  Math.atan2(Math.sin(L)*Math.cos(eps)-Math.tan(B)*Math.sin(eps), Math.cos(L)),
+    dec: Math.asin(Math.sin(B)*Math.cos(eps)+Math.cos(B)*Math.sin(eps)*Math.sin(L))
+  };
+}
+function lst(date, lon){
+  const d = julianDate(date)-2451545.0, T=d/36525;
+  return norm360(280.46061837 + 360.98564736629*d + 0.000387933*T*T - T*T*T/38710000 + lon);
+}
+function moonAltitude(date, lat, lon){
+  const {ra,dec} = moonEquatorial(date);
+  const ha = (lst(date,lon) - ra*R2D) * D2R;
+  return Math.asin(Math.sin(lat*D2R)*Math.sin(dec)+Math.cos(lat*D2R)*Math.cos(dec)*Math.cos(ha))*R2D;
+}
+function moonTimes(localStart, lat, lon){
+  let prevT=localStart, prevAlt=moonAltitude(prevT,lat,lon)-0.125;
+  let rise=null, set=null;
+  for(let i=1;i<=144;i++){
+    const t = new Date(localStart.getTime()+i*10*60000);
+    const alt = moonAltitude(t,lat,lon)-0.125;
+    if(prevAlt<0 && alt>=0 && !rise){
+      rise = new Date(prevT.getTime() + (-prevAlt/(alt-prevAlt))*10*60000);
+    }
+    if(prevAlt>=0 && alt<0 && !set){
+      set = new Date(prevT.getTime() + (prevAlt/(prevAlt-alt))*10*60000);
+    }
+    prevT=t; prevAlt=alt;
+    if(rise && set) break;
+  }
+  return {rise,set};
+}
+
+/* =========================================================================
+   Spline interpolation (Catmull-Rom) for smooth chart from hourly samples
+   ========================================================================= */
+function catmullRom(p0,p1,p2,p3, t){
+  const t2=t*t, t3=t2*t;
+  return 0.5*((2*p1) + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3);
+}
+// Build a fine series (every stepMin minutes) interpolating hourly points,
+// preferring exact JMA-supplied highs/lows where present.
+function smoothFromHourly(hourly /* 24+ values */, dayStart, stepMin){
+  const out = [];
+  const n = hourly.length;
+  const stepsPerHour = 60/stepMin;
+  for(let i=0;i<n-1;i++){
+    const p0 = hourly[Math.max(0,i-1)] ?? hourly[i];
+    const p1 = hourly[i];
+    const p2 = hourly[i+1];
+    const p3 = hourly[Math.min(n-1,i+2)] ?? hourly[i+1];
+    if(p1==null || p2==null) continue;
+    for(let s=0;s<stepsPerHour;s++){
+      const t = s/stepsPerHour;
+      const v = catmullRom(p0,p1,p2,p3,t);
+      out.push({
+        t: new Date(dayStart.getTime() + ((i*60 + s*stepMin)*60000)),
+        h: v
+      });
+    }
+  }
+  // last point
+  const last = hourly[n-1];
+  if(last!=null){
+    out.push({t: new Date(dayStart.getTime() + ((n-1)*60)*60000), h: last});
+  }
+  return out;
+}
+
+/* =========================================================================
+   Data source resolver
+   ========================================================================= */
+let mode = "jma"; // or "calc"
+const STATUS = document.getElementById("statusLine");
+
+async function getDayData(date, port){
+  const dayStart = new Date(date); dayStart.setHours(0,0,0,0);
+  const dayEnd   = new Date(dayStart.getTime()+86400000);
+  const yearKey  = `${dayStart.getFullYear()}-${pad2(dayStart.getMonth()+1)}-${pad2(dayStart.getDate())}`;
+
+  if(mode==="jma" && JMA_YEARS_AVAILABLE.includes(dayStart.getFullYear())){
+    setStatus("loading", `気象庁データ取得中 (${port.stn}/${dayStart.getFullYear()})…`);
+    try{
+      const yearMap = await getJmaYear(dayStart.getFullYear(), port.stn);
+      const day = yearMap[yearKey];
+      // Need next-day first hour for spline tail
+      const nextKey = ymd(new Date(dayStart.getTime()+86400000));
+      const next = yearMap[nextKey];
+      if(day){
+        const hours25 = day.hourly.slice();
+        if(next && next.hourly[0]!=null) hours25.push(next.hourly[0]);
+        else hours25.push(day.hourly[23]);
+        const series = smoothFromHourly(hours25, dayStart, 10);
+        // High/low tides directly from JMA (use day.highs / day.lows times of THIS day)
+        const extrema = [];
+        day.highs.forEach(e=>extrema.push({type:"hi", t:new Date(dayStart.getFullYear(),dayStart.getMonth(),dayStart.getDate(),e.hh,e.mm), h:e.h}));
+        day.lows.forEach(e=>extrema.push({type:"lo", t:new Date(dayStart.getFullYear(),dayStart.getMonth(),dayStart.getDate(),e.hh,e.mm), h:e.h}));
+        extrema.sort((a,b)=>a.t-b.t);
+        setStatus("ok", `気象庁 ${dayStart.getFullYear()}年潮位表 (${port.stn})`);
+        return {series, extrema, source:"jma", refNote:"潮位表基準面上 (cm)"};
+      }
+    }catch(e){
+      setStatus("error", `取得失敗: ${e.message} → 簡易計算で表示します`);
+    }
+  }
+  // Fallback: harmonic
+  const series = [];
+  for(let i=0;i<=24*6;i++){ // every 10 min
+    const t = new Date(dayStart.getTime()+i*10*60000);
+    series.push({t, h: tideHeightHarmonic(t, port.stn)});
+  }
+  const extrema = [];
+  for(let i=1;i<series.length-1;i++){
+    const a=series[i-1].h,b=series[i].h,c=series[i+1].h;
+    if(b>a && b>c) extrema.push({type:"hi", t:series[i].t, h:b});
+    else if(b<a && b<c) extrema.push({type:"lo", t:series[i].t, h:b});
+  }
+  if(mode==="jma") setStatus("error", `${dayStart.getFullYear()}年は気象庁データ未掲載 → 簡易計算`);
+  else setStatus("ok", "簡易計算 (主要8分潮)");
+  return {series, extrema, source:"calc", refNote:"任意基準面 (cm)"};
+}
+
+/* =========================================================================
+   UI / rendering
+   ========================================================================= */
+function ymd(d){ return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()); }
+function parseYmd(s){ const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d,0,0,0); }
+function fmtTime(d){ return d? pad2(d.getHours())+":"+pad2(d.getMinutes()) : "—"; }
+function fmtDate(d){ return d.getFullYear()+"/"+pad2(d.getMonth()+1)+"/"+pad2(d.getDate()); }
+function setStatus(kind, msg){
+  STATUS.className = "status " + kind;
+  STATUS.innerHTML = (kind==="loading"?'<span class="spinner"></span>':"") + msg;
+}
+
+let tideChart, weeklyChart;
+let currentPortKey = "tokyo";
+let currentDate = new Date(); currentDate.setHours(0,0,0,0);
+
+function init(){
+  const sel = document.getElementById("portSelect");
+  for(const k of Object.keys(PORTS)){
+    const o = document.createElement("option");
+    o.value=k; o.textContent=PORTS[k].name + ` (${PORTS[k].stn})`;
+    sel.appendChild(o);
+  }
+  sel.value = currentPortKey;
+  document.getElementById("dateInput").value = ymd(currentDate);
+
+  sel.onchange = e => { currentPortKey = e.target.value; render(); };
+  document.getElementById("dateInput").onchange = e => { currentDate = parseYmd(e.target.value); render(); };
+  document.getElementById("todayBtn").onclick = ()=>{ currentDate=new Date(); currentDate.setHours(0,0,0,0); document.getElementById("dateInput").value=ymd(currentDate); render(); };
+  document.getElementById("prevBtn").onclick = ()=>{ currentDate=new Date(currentDate-86400000); document.getElementById("dateInput").value=ymd(currentDate); render(); };
+  document.getElementById("nextBtn").onclick = ()=>{ currentDate=new Date(currentDate.getTime()+86400000); document.getElementById("dateInput").value=ymd(currentDate); render(); };
+
+  document.getElementById("srcJma").onclick = ()=>{ mode="jma"; toggleSegUI(); render(); };
+  document.getElementById("srcCalc").onclick= ()=>{ mode="calc";toggleSegUI(); render(); };
+  document.getElementById("reloadBtn").onclick = ()=>{ clearJmaCache(); render(); };
+
+  render();
+}
+function toggleSegUI(){
+  document.getElementById("srcJma").classList.toggle("on", mode==="jma");
+  document.getElementById("srcCalc").classList.toggle("on", mode==="calc");
+}
+
+async function render(){
+  const port = PORTS[currentPortKey];
+  const start = new Date(currentDate); start.setHours(0,0,0,0);
+  document.getElementById("dayTitle").textContent = `${port.name}　${fmtDate(start)} の潮位`;
+
+  // Sun & moon (independent of source)
+  const noon = new Date(start.getTime()+12*3600000);
+  const sun = sunTimes(noon, port.lat, port.lon);
+  const moon = moonTimes(start, port.lat, port.lon);
+  const phase = moonPhase(noon);
+  document.getElementById("infoGrid").innerHTML = `
+    <div class="info-card"><div class="label">月相</div>
+      <div class="value"><span class="moon-emoji">${phase.emoji}</span> ${phase.name}</div>
+      <div class="label" style="margin-top:2px">月齢 ${phase.age.toFixed(1)} / 輝面 ${(phase.illum*100).toFixed(0)}%</div>
+    </div>
+    <div class="info-card"><div class="label">日の出</div><div class="value">${fmtTime(sun.rise)}</div></div>
+    <div class="info-card"><div class="label">日の入</div><div class="value">${fmtTime(sun.set)}</div></div>
+    <div class="info-card"><div class="label">月の出</div><div class="value">${fmtTime(moon.rise)}</div></div>
+    <div class="info-card"><div class="label">月の入</div><div class="value">${fmtTime(moon.set)}</div></div>`;
+
+  // Day data
+  const day = await getDayData(start, port);
+  drawTideChart(day.series, day.extrema, day.refNote, day.source);
+  drawExtremaTable(day.extrema);
+
+  // Weekly
+  drawWeeklyLoading();
+  const weekly = [];
+  for(let d=0; d<7; d++){
+    const ds = new Date(start.getTime()+d*86400000);
+    const data = await getDayData(ds, port);
+    weekly.push({ds, series: data.series});
+  }
+  drawWeeklyChart(weekly, start);
+}
+
+function drawTideChart(series, extrema, refNote, source){
+  const labels = series.map(p=> pad2(p.t.getHours())+":"+pad2(p.t.getMinutes()));
+  const data = series.map(p=> Math.round(p.h*10)/10);
+  const tickCb = (v,idx)=>{
+    const t = series[idx].t;
+    return (t.getMinutes()===0 && t.getHours()%3===0) ? pad2(t.getHours())+":00" : "";
+  };
+  // Map extrema to the closest label x for scatter plotting on category axis
+  const findClosest = (t)=>{
+    let best=0, bestDt=Infinity;
+    for(let i=0;i<series.length;i++){
+      const dt = Math.abs(series[i].t - t);
+      if(dt<bestDt){ bestDt=dt; best=i; }
+    }
+    return labels[best];
+  };
+  const hi = extrema.filter(e=>e.type==="hi").map(e=>({x:findClosest(e.t), y:e.h}));
+  const lo = extrema.filter(e=>e.type==="lo").map(e=>({x:findClosest(e.t), y:e.h}));
+
+  const cfg = {
+    type:"line",
+    data:{
+      labels,
+      datasets:[
+        {label:`潮位 (${refNote})`, data, borderColor:"#0a84ff", backgroundColor:"rgba(10,132,255,0.15)", borderWidth:2, pointRadius:0, fill:true, tension:0.35},
+        {label:"満潮", type:"scatter", data:hi, backgroundColor:"#ff6b6b", borderColor:"#ff6b6b", pointRadius:6, pointHoverRadius:8},
+        {label:"干潮", type:"scatter", data:lo, backgroundColor:"#1abc9c", borderColor:"#1abc9c", pointRadius:6, pointHoverRadius:8}
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:"index",intersect:false},
+      plugins:{
+        legend:{display:true,position:"bottom",labels:{boxWidth:12}},
+        tooltip:{callbacks:{
+          title:(items)=>items.length?"時刻 "+items[0].label:"",
+          label:(item)=> item.dataset.label.startsWith("潮位")? "潮位 "+item.formattedValue+" cm" : item.dataset.label+" "+item.formattedValue+" cm"
+        }}
+      },
+      scales:{
+        y:{title:{display:true,text:`潮位 (cm) — ${refNote}`},grid:{color:"#eef2f7"}},
+        x:{ticks:{callback:tickCb,autoSkip:false,maxRotation:0},grid:{color:"#f4f6fa"}}
+      }
+    }
+  };
+  if(tideChart) tideChart.destroy();
+  tideChart = new Chart(document.getElementById("tideChart"), cfg);
+}
+
+function drawExtremaTable(extrema){
+  const tbody = document.querySelector("#extremaTable tbody");
+  if(!extrema.length){ tbody.innerHTML = `<tr><td colspan=3>—</td></tr>`; return; }
+  tbody.innerHTML = extrema.map(e=>{
+    const cls = e.type==="hi"?"hi":"lo";
+    const lbl = e.type==="hi"?"満潮":"干潮";
+    return `<tr><td><span class="pill ${cls}">${lbl}</span></td><td>${fmtTime(e.t)}</td><td class="${cls}">${Math.round(e.h*10)/10}</td></tr>`;
+  }).join("");
+}
+
+function drawWeeklyLoading(){
+  if(weeklyChart){ weeklyChart.destroy(); weeklyChart=null; }
+}
+function drawWeeklyChart(weekly, start){
+  // Concatenate up to 7 days. Each day's series may have different length; we
+  // resample to one point per 30 min for a uniform x-axis.
+  const stepMin=30, perDay=24*60/stepMin;
+  const labels=[], data=[];
+  weekly.forEach((w,d)=>{
+    // pick samples nearest each 30-min slot
+    for(let i=0;i<perDay;i++){
+      const target = w.ds.getTime() + i*stepMin*60000;
+      let best=0, bestDt=Infinity;
+      for(let j=0;j<w.series.length;j++){
+        const dt = Math.abs(w.series[j].t - target);
+        if(dt<bestDt){ bestDt=dt; best=j; }
+      }
+      labels.push(i===0 ? `${w.ds.getMonth()+1}/${w.ds.getDate()}` : "");
+      data.push(Math.round(w.series[best].h*10)/10);
+    }
+  });
+  const cfg = {
+    type:"line",
+    data:{labels, datasets:[{label:"潮位 (cm)", data, borderColor:"#10355c", backgroundColor:"rgba(16,53,92,0.12)", borderWidth:1.5, pointRadius:0, fill:true, tension:0.3}]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}, tooltip:{callbacks:{
+        title:(items)=>{
+          if(!items.length) return "";
+          const idx=items[0].dataIndex, dayIdx=Math.floor(idx/perDay), within=idx%perDay;
+          const hh=Math.floor(within/(60/stepMin)), mm=(within%(60/stepMin))*stepMin;
+          const day = weekly[dayIdx]?.ds || start;
+          return `${day.getMonth()+1}/${day.getDate()} ${pad2(hh)}:${pad2(mm)}`;
+        },
+        label:(item)=> "潮位 "+item.formattedValue+" cm"
+      }}},
+      scales:{
+        y:{title:{display:true,text:"潮位 (cm)"},grid:{color:"#eef2f7"}},
+        x:{ticks:{autoSkip:false,maxRotation:0},grid:{display:false}}
+      }
+    }
+  };
+  if(weeklyChart) weeklyChart.destroy();
+  weeklyChart = new Chart(document.getElementById("weeklyChart"), cfg);
+}
+
+init();
+</script>
+</body>
+</html>
