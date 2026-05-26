@@ -173,7 +173,7 @@ const JMA_YEARS_AVAILABLE = [2025, 2026, 2027];
      const MY_PROXY = "https://jma-tide.example.workers.dev";
    空文字のままなら公共CORSプロキシのみを使用する。
    ========================================================================= */
-const MY_PROXY = ""; // ← 自前Workerを立てたらここに URL を設定
+const MY_PROXY = "https://jma-tide.enox8282.workers.dev"; // ← 自前Workerを立てたらここに URL を設定
 
 const PROXIES = [
   ...(MY_PROXY ? [url => `${MY_PROXY}/?url=${encodeURIComponent(url)}`] : []),
